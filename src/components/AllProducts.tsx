@@ -176,9 +176,9 @@ export default function AllProducts({
                   );
 
                   return (
-                    <TableRow
+                    <TableRow 
                       key={product.id}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className="cursor-pointer odd:bg-gray-50 even:bg-white dark:odd:bg-gray-900 dark:even:bg-gray-950 hover:bg-muted"
                       onClick={() => onView?.(product)}
                     >
                       {/* Image */}

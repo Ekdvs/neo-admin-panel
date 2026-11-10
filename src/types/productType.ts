@@ -6,6 +6,7 @@ export interface ProductMedia {
   productId: string;
   url: string;
   type: MediaType;
+  sortOrder: number;
   createdAt?: string;
   updatedAt?: string;
 }
