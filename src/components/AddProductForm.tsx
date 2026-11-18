@@ -1,21 +1,20 @@
-
 "use client";
 
-import { useRef, useState } from "react";
+import { FormEvent, ReactNode, useState } from "react";
 import { useRouter } from "next/navigation";
-import api from "@/lib/axios";
+import axios from "axios";
 import toast from "react-hot-toast";
+import { CheckCircle2, ImagePlus, Loader2, Package, Wallet } from "lucide-react";
 
-import type {
-  Product,
-  ProductStatus,
-  MediaType,
-  ApiResponse,
-} from "@/types/productType";
+import { createProduct, type CreateProgress } from "@/services/productService";
+import type { ProductStatus } from "@/types/productType";
 
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
+import MediaUploader, {
+  type MediaItem,
+} from "@/components/MediaUploader";
+import { MAX_FILES } from "@/lib/product-media";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,354 +23,250 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
-  Package,
-  ImagePlus,
-  Video,
-  UploadCloud,
-  X,
-  GripVertical,
-  Image as ImageIcon,
-  Loader2,
-  CheckCircle2,
-  Trash2,
-} from "lucide-react";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 
-type MediaItem = {
-  id: string;
-  file: File;
-  type: MediaType;
-  preview: string;
-};
-
-type PresignResponse = {
-  uploadUrl: string;
-  fileUrl: string;
-};
-
-type ProductPayload = {
+type FormValues = {
   sku: string;
   name: string;
-  altName: string[];
-  description: string | null;
-  stock: number;
-  status: ProductStatus;
-  price: number;
-  compareAtPrice: number | null;
-  brand: string | null;
-  model: string | null;
-  media: {
-    url: string;
-    type: MediaType;
-    sortOrder: number;
-  }[];
+  altName: string;
+  description: string;
+  brand: string;
+  model: string;
+  price: string;
+  compareAtPrice: string;
+  stock: string;
 };
 
-const MAX_FILES = 10;
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
-const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
+type FieldErrors = Partial<Record<keyof FormValues | "media", string>>;
+
+const INITIAL_VALUES: FormValues = {
+  sku: "",
+  name: "",
+  altName: "",
+  description: "",
+  brand: "",
+  model: "",
+  price: "",
+  compareAtPrice: "",
+  stock: "0",
+};
+
+const parseAltNames = (value: string) =>
+  value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const validate = (values: FormValues): FieldErrors => {
+  const errors: FieldErrors = {};
+  const price = Number(values.price);
+  const stock = Number(values.stock);
+  const altNames = parseAltNames(values.altName);
+
+  if (!values.sku.trim()) errors.sku = "SKU is required";
+  else if (values.sku.trim().length > 100) errors.sku = "Max 100 characters";
+
+  if (values.name.trim().length < 3)
+    errors.name = "Product name must be at least 3 characters";
+  else if (values.name.trim().length > 200) errors.name = "Max 200 characters";
+
+  if (altNames.length > 10) errors.altName = "Maximum 10 alternative names";
+  else if (altNames.some((n) => n.length > 200))
+    errors.altName = "Each name must be under 200 characters";
+
+  if (values.description.trim().length > 1000)
+    errors.description = "Max 1000 characters";
+
+  if (values.brand.trim().length > 100) errors.brand = "Max 100 characters";
+  if (values.model.trim().length > 100) errors.model = "Max 100 characters";
+
+  if (!values.price.trim() || !Number.isFinite(price) || price <= 0)
+    errors.price = "Enter a valid price greater than 0";
+  else if (price > 1_000_000) errors.price = "Price cannot exceed 1,000,000";
+
+  if (
+    values.stock.trim() === "" ||
+    !Number.isInteger(stock) ||
+    stock < 0 ||
+    stock > 1_000_000
+  )
+    errors.stock = "Enter a whole number between 0 and 1,000,000";
+
+  if (values.compareAtPrice.trim() !== "") {
+    const compare = Number(values.compareAtPrice);
+    if (!Number.isFinite(compare) || compare <= price)
+      errors.compareAtPrice = "Must be greater than the selling price";
+  }
+
+  return errors;
+};
+
+const getBackendFieldErrors = (error: unknown): FieldErrors => {
+  if (!axios.isAxiosError(error)) return {};
+
+  const raw = error.response?.data?.errors as
+    | Record<string, string[] | undefined>
+    | null
+    | undefined;
+
+  if (!raw || typeof raw !== "object") return {};
+
+  const result: FieldErrors = {};
+  for (const [key, messages] of Object.entries(raw)) {
+    if (Array.isArray(messages) && messages[0]) {
+      result[key as keyof FieldErrors] = messages[0];
+    }
+  }
+  return result;
+};
+
+const getErrorMessage = (error: unknown): string => {
+  if (axios.isAxiosError(error)) {
+    if (error.code === "ECONNABORTED") return "Request timed out. Try again.";
+    return error.response?.data?.message || error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return "Failed to create product. Please try again.";
+};
+
+// Small field wrapper
+const Field = ({
+  id,
+  label,
+  required,
+  error,
+  hint,
+  className,
+  children,
+}: {
+  id: string;
+  label: string;
+  required?: boolean;
+  error?: string;
+  hint?: string;
+  className?: string;
+  children: ReactNode;
+}) => (
+  <div className={`space-y-2 ${className ?? ""}`}>
+    <Label htmlFor={id}>
+      {label}
+      {required && <span className="text-destructive"> *</span>}
+    </Label>
+    {children}
+    {error ? (
+      <p className="text-xs text-destructive">{error}</p>
+    ) : hint ? (
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    ) : null}
+  </div>
+);
 
 const AddProductForm = () => {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [loading, setLoading] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-
-  const [media, setMedia] = useState<MediaItem[]>([]);
-
-  // Product fields
-  const [sku, setSku] = useState("");
-  const [name, setName] = useState("");
-  const [altName, setAltName] = useState("");
-  const [description, setDescription] = useState("");
-  const [brand, setBrand] = useState("");
-  const [model, setModel] = useState("");
-  const [price, setPrice] = useState("");
-  const [compareAtPrice, setCompareAtPrice] = useState("");
-  const [stock, setStock] = useState("0");
+  const [values, setValues] = useState<FormValues>(INITIAL_VALUES);
   const [status, setStatus] = useState<ProductStatus>("ACTIVE");
+  const [media, setMedia] = useState<MediaItem[]>([]);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<CreateProgress | null>(null);
 
-  // Add files
-  const handleFiles = (files: FileList | File[]) => {
-    const selectedFiles = Array.from(files);
+  const setField =
+    (key: keyof FormValues) =>
+    (event: { target: { value: string } }) => {
+      setValues((prev) => ({ ...prev, [key]: event.target.value }));
+      setErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+    };
 
-    const validFiles: MediaItem[] = [];
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (loading) return;
 
-    for (const file of selectedFiles) {
-      const isImage = file.type.startsWith("image/");
-      const isVideo = file.type.startsWith("video/");
+    const validationErrors = validate(values);
+    setErrors(validationErrors);
 
-      if (!isImage && !isVideo) {
-        toast.error(`${file.name}: Unsupported file type`);
-        continue;
-      }
-
-      if (isImage && file.size > MAX_IMAGE_SIZE) {
-        toast.error(`${file.name}: Image must be under 10 MB`);
-        continue;
-      }
-
-      if (isVideo && file.size > MAX_VIDEO_SIZE) {
-        toast.error(`${file.name}: Video must be under 100 MB`);
-        continue;
-      }
-
-      validFiles.push({
-        id: crypto.randomUUID(),
-        file,
-        type: isImage ? "IMAGE" : "VIDEO",
-        preview: URL.createObjectURL(file),
-      });
-    }
-
-    setMedia((previous) => {
-      const available = MAX_FILES - previous.length;
-
-      if (available <= 0) {
-        validFiles.forEach((item) => URL.revokeObjectURL(item.preview));
-        toast.error("Maximum 10 media files allowed");
-        return previous;
-      }
-
-      if (validFiles.length > available) {
-        validFiles
-          .slice(available)
-          .forEach((item) => URL.revokeObjectURL(item.preview));
-
-        toast.error(`You can add only ${available} more files`);
-      }
-
-      return [...previous, ...validFiles.slice(0, available)];
-    });
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
-
-  // Drag and drop files
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setDragging(false);
-
-    if (e.dataTransfer.files.length > 0) {
-      handleFiles(e.dataTransfer.files);
-    }
-  };
-
-  // Remove media
-  const removeMedia = (id: string) => {
-    setMedia((previous) => {
-      const selected = previous.find((item) => item.id === id);
-
-      if (selected) {
-        URL.revokeObjectURL(selected.preview);
-      }
-
-      return previous.filter((item) => item.id !== id);
-    });
-  };
-
-  // Reorder media
-  const handleMediaDragStart = (index: number) => {
-    setDraggedIndex(index);
-  };
-
-  const handleMediaDrop = (index: number) => {
-    if (draggedIndex === null || draggedIndex === index) {
-      setDraggedIndex(null);
+    const firstError = Object.values(validationErrors).find(Boolean);
+    if (firstError) {
+      toast.error(firstError);
       return;
     }
 
-    setMedia((previous) => {
-      const updated = [...previous];
-
-      const [movedItem] = updated.splice(draggedIndex, 1);
-
-      updated.splice(index, 0, movedItem);
-
-      return updated;
-    });
-
-    setDraggedIndex(null);
-  };
-
-  // Upload a file directly to S3
-  const uploadToS3 = async (file: File): Promise<string> => {
-    const presignResponse = await api.post<
-      ApiResponse<PresignResponse>
-    >("/api/media/presign", {
-      filename: file.name,
-      contentType: file.type,
-    });
-
-    const { uploadUrl, fileUrl } = presignResponse.data.data;
-
-    const uploadResponse = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type,
-      },
-      body: file,
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error(`Failed to upload ${file.name} to S3`);
-    }
-
-    return fileUrl;
-  };
-
-  // Submit product
-  const handleSubmit = async (
-    e: React.FormEvent<HTMLFormElement>
-  ) => {
-    e.preventDefault();
-
-    if (!sku.trim() || !name.trim()) {
-      toast.error("SKU and product name are required");
-      return;
-    }
-
-    if (!price || Number(price) <= 0) {
-      toast.error("Enter a valid product price");
-      return;
-    }
-
-    if (
-      stock.trim() === "" ||
-      !Number.isInteger(Number(stock)) ||
-      Number(stock) < 0
-    ) {
-      toast.error("Enter a valid stock quantity");
-      return;
-    }
-
-    if (
-      compareAtPrice &&
-      Number(compareAtPrice) <= Number(price)
-    ) {
-      toast.error("Compare-at price must be greater than the selling price");
-      return;
-    }
+    setLoading(true);
+    setProgress({ phase: "uploading", percent: 0 });
 
     try {
-      setLoading(true);
-
-      toast.loading("Uploading product media...", {
-        id: "product-upload",
-      });
-
-      // Upload files in the selected order
-      const uploadedMedia = await Promise.all(
-        media.map(async (item, index) => {
-          const url = await uploadToS3(item.file);
-
-          return {
-            url,
-            type: item.type,
-            sortOrder: index,
-          };
-        })
+      const response = await createProduct(
+        {
+          sku: values.sku.trim(),
+          name: values.name.trim(),
+          altName: parseAltNames(values.altName),
+          description: values.description.trim() || null,
+          stock: Number(values.stock),
+          status,
+          price: Number(values.price),
+          compareAtPrice: values.compareAtPrice.trim()
+            ? Number(values.compareAtPrice)
+            : null,
+          brand: values.brand.trim() || null,
+          model: values.model.trim() || null,
+          media: media.map((item) => item.file),
+        },
+        setProgress,
       );
 
-      const payload: ProductPayload = {
-        sku: sku.trim(),
-        name: name.trim(),
-
-        altName: altName
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-
-        description: description.trim() || null,
-        stock: Number(stock),
-        status,
-        price: Number(price),
-
-        compareAtPrice: compareAtPrice
-          ? Number(compareAtPrice)
-          : null,
-
-        brand: brand.trim() || null,
-        model: model.trim() || null,
-
-        media: uploadedMedia,
-      };
-
-      toast.loading("Creating product...", {
-        id: "product-upload",
-      });
-
-      const response = await api.post<ApiResponse<Product>>(
-        "/api/product",
-        payload
-      );
-
-      if (!response.data.success) {
-        throw new Error(response.data.message || "Product creation failed");
+      if (!response.success) {
+        throw new Error(response.message || "Product creation failed");
       }
 
-      toast.success("Product created successfully!", {
-        id: "product-upload",
-      });
-
-      // Release preview URLs
-      media.forEach((item) => URL.revokeObjectURL(item.preview));
-
+      toast.success(response.message || "Product created successfully!");
       router.push("/dashboard/products");
       router.refresh();
-
     } catch (error: unknown) {
-      const message =
-        error &&
-        typeof error === "object" &&
-        "response" in error
-          ? (
-              error.response as {
-                data?: { message?: string };
-              }
-            )?.data?.message
-          : error instanceof Error
-            ? error.message
-            : "Failed to create product";
+      console.error("Create product error:", error);
 
-      toast.error(message || "Failed to create product", {
-        id: "product-upload",
-      });
+      const fieldErrors = getBackendFieldErrors(error);
+      if (Object.keys(fieldErrors).length > 0) setErrors(fieldErrors);
 
-    } finally {
+      toast.error(getErrorMessage(error), { duration: 5000 });
       setLoading(false);
+      setProgress(null);
     }
   };
+
+  const progressLabel =
+    progress?.phase === "uploading"
+      ? `Uploading media… ${progress.percent}%`
+      : "Saving product…";
 
   return (
     <form
       id="add-product-form"
       onSubmit={handleSubmit}
+      noValidate
       className="flex flex-col gap-6"
     >
       {/* BASIC INFORMATION */}
       <Card className="border shadow-sm">
-
         <CardHeader>
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Package className="h-5 w-5" />
             </div>
-
             <div>
-              <CardTitle className="text-lg">
-                Basic Information
-              </CardTitle>
-
+              <CardTitle className="text-lg">Basic Information</CardTitle>
               <CardDescription>
-                Enter the product identification and general details.
+                Product identification and general details.
               </CardDescription>
             </div>
           </div>
@@ -380,204 +275,188 @@ const AddProductForm = () => {
         <Separator />
 
         <CardContent className="grid grid-cols-1 gap-5 pt-6 md:grid-cols-2">
-
-          {/* SKU */}
-          <div className="space-y-2">
-            <Label htmlFor="sku">SKU *</Label>
-
+          <Field id="sku" label="SKU" required error={errors.sku}>
             <Input
               id="sku"
-              value={sku}
-              onChange={(e) => setSku(e.target.value)}
+              value={values.sku}
+              onChange={setField("sku")}
               placeholder="e.g. PROD-001"
-              required
               disabled={loading}
+              aria-invalid={!!errors.sku}
             />
-          </div>
+          </Field>
 
-          {/* Name */}
-          <div className="space-y-2">
-            <Label htmlFor="name">Product Name *</Label>
-
+          <Field id="name" label="Product Name" required error={errors.name}>
             <Input
               id="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={values.name}
+              onChange={setField("name")}
               placeholder="Enter product name"
-              required
               disabled={loading}
+              aria-invalid={!!errors.name}
             />
-          </div>
+          </Field>
 
-          {/* Alternative Names */}
-          <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="altName">Alternative Names</Label>
-
+          <Field
+            id="altName"
+            label="Alternative Names"
+            error={errors.altName}
+            hint="Separate names with commas."
+            className="md:col-span-2"
+          >
             <Input
               id="altName"
-              value={altName}
-              onChange={(e) => setAltName(e.target.value)}
+              value={values.altName}
+              onChange={setField("altName")}
               placeholder="Name 1, Name 2, Name 3"
               disabled={loading}
+              aria-invalid={!!errors.altName}
             />
+          </Field>
 
-            <p className="text-xs text-muted-foreground">
-              Separate alternative names using commas.
-            </p>
-          </div>
-
-          {/* Description */}
-          <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="description">Description</Label>
-
+          <Field
+            id="description"
+            label="Description"
+            error={errors.description}
+            hint={`${values.description.length} / 1000`}
+            className="md:col-span-2"
+          >
             <Textarea
               id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              value={values.description}
+              onChange={setField("description")}
               placeholder="Describe your product..."
               rows={5}
+              maxLength={1000}
               disabled={loading}
               className="resize-y"
+              aria-invalid={!!errors.description}
             />
-          </div>
+          </Field>
 
-          {/* Brand */}
-          <div className="space-y-2">
-            <Label htmlFor="brand">Brand</Label>
-
+          <Field id="brand" label="Brand" error={errors.brand}>
             <Input
               id="brand"
-              value={brand}
-              onChange={(e) => setBrand(e.target.value)}
+              value={values.brand}
+              onChange={setField("brand")}
               placeholder="Enter brand"
               disabled={loading}
+              aria-invalid={!!errors.brand}
             />
-          </div>
+          </Field>
 
-          {/* Model */}
-          <div className="space-y-2">
-            <Label htmlFor="model">Model</Label>
-
+          <Field id="model" label="Model" error={errors.model}>
             <Input
               id="model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
+              value={values.model}
+              onChange={setField("model")}
               placeholder="Enter model"
               disabled={loading}
+              aria-invalid={!!errors.model}
             />
-          </div>
-
+          </Field>
         </CardContent>
       </Card>
 
-      {/* PRICING AND INVENTORY */}
+      {/* PRICING & INVENTORY */}
       <Card className="border shadow-sm">
-
         <CardHeader>
-          <CardTitle className="text-lg">
-            Pricing & Inventory
-          </CardTitle>
-
-          <CardDescription>
-            Configure product pricing, stock and availability.
-          </CardDescription>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Wallet className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-lg">Pricing & Inventory</CardTitle>
+              <CardDescription>
+                Pricing, stock and availability.
+              </CardDescription>
+            </div>
+          </div>
         </CardHeader>
 
         <Separator />
 
         <CardContent className="grid grid-cols-1 gap-5 pt-6 md:grid-cols-2">
-
-          <div className="space-y-2">
-            <Label htmlFor="price">Selling Price *</Label>
-
+          <Field id="price" label="Selling Price" required error={errors.price}>
             <Input
               id="price"
               type="number"
+              inputMode="decimal"
               min="0.01"
               step="0.01"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
+              value={values.price}
+              onChange={setField("price")}
               placeholder="0.00"
-              required
               disabled={loading}
+              aria-invalid={!!errors.price}
             />
-          </div>
+          </Field>
 
-          <div className="space-y-2">
-            <Label htmlFor="compareAtPrice">
-              Compare-at Price
-            </Label>
-
+          <Field
+            id="compareAtPrice"
+            label="Compare-at Price"
+            error={errors.compareAtPrice}
+            hint="Original price before discount."
+          >
             <Input
               id="compareAtPrice"
               type="number"
+              inputMode="decimal"
               min="0"
               step="0.01"
-              value={compareAtPrice}
-              onChange={(e) => setCompareAtPrice(e.target.value)}
+              value={values.compareAtPrice}
+              onChange={setField("compareAtPrice")}
               placeholder="0.00"
               disabled={loading}
+              aria-invalid={!!errors.compareAtPrice}
             />
+          </Field>
 
-            <p className="text-xs text-muted-foreground">
-              Original price before discount.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="stock">Stock Quantity *</Label>
-
+          <Field id="stock" label="Stock Quantity" required error={errors.stock}>
             <Input
               id="stock"
               type="number"
+              inputMode="numeric"
               min="0"
               step="1"
-              value={stock}
-              onChange={(e) => setStock(e.target.value)}
+              value={values.stock}
+              onChange={setField("stock")}
               placeholder="0"
-              required
               disabled={loading}
+              aria-invalid={!!errors.stock}
             />
-          </div>
+          </Field>
 
-          <div className="space-y-2">
-            <Label htmlFor="status">Product Status</Label>
-
-            <select
-              id="status"
+          <Field id="status" label="Product Status">
+            <Select
               value={status}
-              onChange={(e) =>
-                setStatus(e.target.value as ProductStatus)
-              }
+              onValueChange={(value) => setStatus(value as ProductStatus)}
               disabled={loading}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <option value="ACTIVE">Active</option>
-              <option value="INACTIVE">Inactive</option>
-            </select>
-          </div>
-
+              <SelectTrigger id="status" className="w-full">
+                <SelectValue placeholder="Select status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ACTIVE">Active</SelectItem>
+                <SelectItem value="INACTIVE">Inactive</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
         </CardContent>
       </Card>
 
-      {/* PRODUCT MEDIA */}
+      {/* MEDIA */}
       <Card className="border shadow-sm">
-
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <ImagePlus className="h-5 w-5" />
               </div>
-
               <div>
-                <CardTitle className="text-lg">
-                  Product Media
-                </CardTitle>
-
+                <CardTitle className="text-lg">Product Media</CardTitle>
                 <CardDescription>
-                  Upload product images and videos.
+                  Upload images and videos. The first item is the primary media.
                 </CardDescription>
               </div>
             </div>
@@ -585,221 +464,34 @@ const AddProductForm = () => {
             <Badge variant="secondary">
               {media.length} / {MAX_FILES} files
             </Badge>
-
           </div>
         </CardHeader>
 
         <Separator />
 
-        <CardContent className="space-y-5 pt-6">
-
-          {/* DROP AREA */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              if (!loading) setDragging(true);
-            }}
-            onDragLeave={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                setDragging(false);
-              }
-            }}
-            onDrop={handleDrop}
-            onClick={() => {
-              if (!loading && media.length < MAX_FILES) {
-                fileInputRef.current?.click();
-              }
-            }}
-            className={`
-              flex min-h-48 cursor-pointer flex-col items-center
-              justify-center rounded-xl border-2 border-dashed
-              p-6 text-center transition-all
-              ${
-                dragging
-                  ? "border-primary bg-primary/5"
-                  : "border-muted-foreground/25 bg-muted/20 hover:border-primary/50 hover:bg-muted/40"
-              }
-              ${
-                loading || media.length >= MAX_FILES
-                  ? "cursor-not-allowed opacity-60"
-                  : ""
-              }
-            `}
-          >
-
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <UploadCloud className="h-7 w-7" />
-            </div>
-
-            <h3 className="text-sm font-semibold">
-              Drag and drop your images or videos
-            </h3>
-
-            <p className="mt-2 text-sm text-muted-foreground">
-              Or click here to browse files
-            </p>
-
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              <Badge variant="outline" className="gap-1">
-                <ImageIcon className="h-3 w-3" />
-                Images
-              </Badge>
-
-              <Badge variant="outline" className="gap-1">
-                <Video className="h-3 w-3" />
-                Videos
-              </Badge>
-            </div>
-
-            <p className="mt-4 text-xs text-muted-foreground">
-              Maximum 10 files · Images up to 10 MB · Videos up to 100 MB
-            </p>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,video/*"
-              multiple
-              className="hidden"
-              disabled={loading || media.length >= MAX_FILES}
-              onChange={(e) => {
-                if (e.target.files) {
-                  handleFiles(e.target.files);
-                }
-              }}
-            />
-
-          </div>
-
-          {/* MEDIA PREVIEW */}
-          {media.length > 0 && (
-            <div className="space-y-4">
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold">
-                    Uploaded Selection
-                  </h3>
-
-                  <p className="text-xs text-muted-foreground">
-                    Drag cards to change their display order.
-                  </p>
-                </div>
-
-                <Badge variant="secondary">
-                  {media.length} selected
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-
-                {media.map((item, index) => (
-                  <div
-                    key={item.id}
-                    draggable={!loading}
-                    onDragStart={() => handleMediaDragStart(index)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleMediaDrop(index);
-                    }}
-                    onDragEnd={() => setDraggedIndex(null)}
-                    className={`
-                      group relative overflow-hidden rounded-xl border
-                      bg-background transition-all
-                      ${
-                        draggedIndex === index
-                          ? "scale-95 opacity-40"
-                          : "hover:border-primary/50 hover:shadow-md"
-                      }
-                    `}
-                  >
-
-                    {/* Preview */}
-                    <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-muted">
-
-                      {item.type === "IMAGE" ? (
-                        <img
-                          src={item.preview}
-                          alt={item.file.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <video
-                          src={item.preview}
-                          controls
-                          preload="metadata"
-                          className="h-full w-full object-contain"
-                        />
-                      )}
-
-                      {/* Order */}
-                      <Badge className="absolute left-2 top-2">
-                        {index === 0 ? "Primary" : `#${index + 1}`}
-                      </Badge>
-
-                      {/* Remove */}
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="destructive"
-                        disabled={loading}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeMedia(item.id);
-                        }}
-                        className="absolute right-2 top-2 h-8 w-8 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-
-                    </div>
-
-                    {/* Media Details */}
-                    <div className="flex items-center gap-2 p-3">
-
-                      <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground" />
-
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-medium">
-                          {item.file.name}
-                        </p>
-
-                        <p className="text-xs text-muted-foreground">
-                          {item.type} · {(item.file.size / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                      </div>
-
-                      {item.type === "IMAGE" ? (
-                        <ImageIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      ) : (
-                        <Video className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      )}
-
-                    </div>
-
-                  </div>
-                ))}
-
-              </div>
-
-            </div>
-          )}
-
-          {media.length === 0 && (
-            <div className="flex items-center gap-2 rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
-              <ImagePlus className="h-4 w-4" />
-              No product media selected yet.
-            </div>
-          )}
-
+        <CardContent className="pt-6">
+          <MediaUploader
+            items={media}
+            onChange={setMedia}
+            disabled={loading}
+            error={errors.media}
+          />
         </CardContent>
       </Card>
 
-      {/* FORM BOTTOM ACTIONS */}
-      <div className="flex flex-col-reverse justify-end gap-3 sm:flex-row">
+      {/* PROGRESS */}
+      {loading && progress && (
+        <div className="space-y-3 rounded-lg border bg-muted/40 p-4">
+          <div className="flex items-center gap-3">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <p className="text-sm font-medium">{progressLabel}</p>
+          </div>
+          <Progress value={progress.percent} />
+        </div>
+      )}
 
+      {/* ACTIONS */}
+      <div className="sticky bottom-0 -mx-4 flex justify-end gap-3 border-t bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
         <Button
           type="button"
           variant="outline"
@@ -809,15 +501,11 @@ const AddProductForm = () => {
           Cancel
         </Button>
 
-        <Button
-          type="submit"
-          disabled={loading}
-          className="gap-2"
-        >
+        <Button type="submit" disabled={loading} className="gap-2">
           {loading ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              Creating Product...
+              Creating…
             </>
           ) : (
             <>
@@ -826,9 +514,7 @@ const AddProductForm = () => {
             </>
           )}
         </Button>
-
       </div>
-
     </form>
   );
 };

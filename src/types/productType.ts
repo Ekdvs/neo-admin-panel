@@ -46,9 +46,18 @@ export interface ApiResponse<T> {
   success: boolean;
   message: string;
   data: T;
+  errors?: Record<string, string[]> | null;
 }
 
 export interface GetProductsParams {
   page?: number;
   limit?: number;
+}
+
+export interface PresignedUpload {
+  uploadUrl: string;
+  key: string;
+  url: string;
+  type: MediaType;
+  contentType: string;
 }

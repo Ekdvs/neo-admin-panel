@@ -11,15 +11,31 @@ const api = axios.create({
   timeout: 15000,
 });
 
+// Request interceptor
+api.interceptors.request.use(
+  (config) => {
+    if (
+      typeof FormData !== "undefined" &&
+      config.data instanceof FormData
+    ) {
+      // Remove JSON Content-Type for multipart requests.
+      // Axios/browser will automatically set the correct boundary.
+      delete config.headers["Content-Type"];
+    }
+
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Response interceptor
 api.interceptors.response.use(
   (response) => response,
-
   (error) => {
     const status = error.response?.status;
     const message = error.response?.data?.message;
 
     if (status === 401) {
-      // JWT expired or unauthorized
       if (typeof window !== "undefined") {
         toast.error("Session expired. Please login again.");
 

@@ -123,16 +123,10 @@ export default function AllProducts({
 
   return (
     <div className="w-full space-y-4">
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">All Products</h2>
-        <p className="text-sm text-muted-foreground">
-          Manage your salon products and inventory.
-        </p>
-      </div>
+      
 
       {/* Table */}
-      <div className="w-full overflow-hidden rounded-md border">
+      <div className="w-full overflow-hidden rounded-md border p-1">
         <div className="relative w-full overflow-x-auto">
           {loading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60">
