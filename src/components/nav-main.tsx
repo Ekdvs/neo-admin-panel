@@ -106,7 +106,7 @@ export function NavMain({
           // Expandable navigation item
           return (
             <Collapsible
-              key={`${item.url}-${pathname}`}
+              key={item.url}
               defaultOpen={active}
               className="group/collapsible"
             >

@@ -44,6 +44,7 @@ export const getProducts = async (
 
 export const getProductById = async (id: string): Promise<Product> => {
   const res = await api.get<ApiResponse<Product>>(`${BASE}/${id}`);
+  console.log("getProductById res.data.data:", res.data.data);
   return res.data.data;
 };
 
@@ -160,4 +161,121 @@ export const createProduct = async (
 
 export const deleteProduct = async (id: string): Promise<void> => {
   await api.delete(`${BASE}/${id}`);
+};
+
+
+export interface UpdateProductInput {
+  sku: string;
+  name: string;
+  altName: string[];
+  description: string | null;
+  stock: number;
+  status: ProductStatus;
+  price: number;
+  compareAtPrice: number | null;
+  brand: string | null;
+  model: string | null;
+  media: File[];
+  existingMedia: { key: string }[];
+}
+
+export const updateProduct = async (
+  id: string,
+  product: UpdateProductInput,
+  onProgress?: (progress: CreateProgress) => void,
+): Promise<ApiResponse<Product>> => {
+  const {
+    media: files,
+    existingMedia,
+    ...fields
+  } = product;
+
+  // Keep existing media and upload only newly selected files.
+  let newUploadedKeys: { key: string }[] = [];
+
+  if (files.length > 0) {
+    const presign = await api.post<
+      ApiResponse<{ uploads: PresignedUpload[] }>
+    >(
+      `${BASE}/upload-url`,
+      {
+        files: files.map((file) => ({
+          contentType: file.type,
+          size: file.size,
+        })),
+      },
+      { skipErrorToast: true },
+    );
+
+    const uploads = presign.data.data.uploads;
+
+    if (uploads.length !== files.length) {
+      throw new Error("Failed to generate upload URLs for all files.");
+    }
+
+    const totalBytes = files.reduce(
+      (sum, file) => sum + file.size,
+      0,
+    );
+
+    const loaded = new Array<number>(files.length).fill(0);
+
+    const report = () => {
+      const done = loaded.reduce((a, b) => a + b, 0);
+
+      onProgress?.({
+        phase: "uploading",
+        percent: totalBytes
+          ? Math.min(100, Math.round((done / totalBytes) * 100))
+          : 100,
+      });
+    };
+
+    await runWithConcurrency(
+      files.map((file, index) => async () => {
+        await axios.put(uploads[index].uploadUrl, file, {
+          headers: {
+            "Content-Type": file.type,
+          },
+          timeout: 0,
+          onUploadProgress: (event) => {
+            loaded[index] = event.loaded;
+            report();
+          },
+        });
+
+        loaded[index] = file.size;
+        report();
+      }),
+      UPLOAD_CONCURRENCY,
+    );
+
+    newUploadedKeys = uploads.map((upload) => ({
+      key: upload.key,
+    }));
+  }
+
+  onProgress?.({
+    phase: "saving",
+    percent: 100,
+  });
+
+  // Existing media + newly uploaded media.
+  const finalMedia = [
+    ...existingMedia,
+    ...newUploadedKeys,
+  ];
+
+  const response = await api.put<ApiResponse<Product>>(
+    `${BASE}/${id}`,
+    {
+      ...fields,
+      media: finalMedia,
+    },
+    {
+      skipErrorToast: true,
+    },
+  );
+
+  return response.data;
 };
