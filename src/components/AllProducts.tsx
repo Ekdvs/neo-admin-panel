@@ -6,7 +6,6 @@ import {
   MoreHorizontalIcon,
   EyeIcon,
   PencilIcon,
-  CopyIcon,
   Trash2Icon,
   Package,
   Loader2,
@@ -39,16 +38,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+
+import DeleteProductDialog from "@/components/DeleteProductDialog";
 
 import { Pagination, Product } from "@/types/productType";
 
@@ -61,6 +52,8 @@ type AllProductsProps = {
   onView?: (product: Product) => void;
   onEdit?: (product: Product) => void;
   onDuplicate?: (product: Product) => void;
+  // Throw from this function to keep the delete dialog open.
+  // The parent is responsible for showing the error toast.
   onDelete?: (product: Product) => void | Promise<void>;
 };
 
@@ -96,7 +89,6 @@ export default function AllProducts({
   onPageChange,
   onView,
   onEdit,
-  onDuplicate,
   onDelete,
 }: AllProductsProps) {
   const [deleteTarget, setDeleteTarget] = React.useState<Product | null>(null);
@@ -104,12 +96,17 @@ export default function AllProducts({
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
+
     try {
       setDeleting(true);
       await onDelete?.(deleteTarget);
+      // Success: close the dialog
+      setDeleteTarget(null);
+    } catch {
+      // Failure: the parent already showed the backend error toast.
+      // Keep the dialog open so the user can retry or cancel.
     } finally {
       setDeleting(false);
-      setDeleteTarget(null);
     }
   };
 
@@ -123,8 +120,6 @@ export default function AllProducts({
 
   return (
     <div className="w-full space-y-4">
-      
-
       {/* Table */}
       <div className="w-full overflow-hidden rounded-md border p-1">
         <div className="relative w-full overflow-x-auto">
@@ -170,7 +165,7 @@ export default function AllProducts({
                   );
 
                   return (
-                    <TableRow 
+                    <TableRow
                       key={product.id}
                       className="cursor-pointer odd:bg-gray-50 even:bg-white dark:odd:bg-gray-900 dark:even:bg-gray-950 hover:bg-muted"
                       onClick={() => onView?.(product)}
@@ -274,26 +269,19 @@ export default function AllProducts({
                           />
 
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => onView?.(product)}>
-                              <EyeIcon className="mr-2 size-4" />
+                            <DropdownMenuItem className="cursor-pointer" onClick={() => onView?.(product)}>
+                              <EyeIcon className="mr-2 size-4 cursor-pointer" />
                               View
                             </DropdownMenuItem>
 
-                            <DropdownMenuItem onClick={() => onEdit?.(product)}>
+                            <DropdownMenuItem className="cursor-pointer"  onClick={() => onEdit?.(product)}>
                               <PencilIcon className="mr-2 size-4" />
                               Edit
                             </DropdownMenuItem>
 
-                            <DropdownMenuItem
-                              onClick={() => onDuplicate?.(product)}
-                            >
-                              <CopyIcon className="mr-2 size-4" />
-                              Duplicate
-                            </DropdownMenuItem>
-
                             <DropdownMenuSeparator />
 
-                            <DropdownMenuItem
+                            <DropdownMenuItem className="cursor-pointer" 
                               variant="destructive"
                               onClick={() => setDeleteTarget(product)}
                             >
@@ -368,35 +356,13 @@ export default function AllProducts({
         )}
       </div>
 
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => {
-          if (!open && !deleting) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Product?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete{" "}
-              <strong>{deleteTarget?.name}</strong>? This action cannot be
-              undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={deleting}
-              className="bg-destructive text-white hover:bg-destructive/90"
-            >
-              {deleting ? "Deleting..." : "Delete Product"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Delete confirmation (user must type the SKU) */}
+      <DeleteProductDialog
+        product={deleteTarget}
+        deleting={deleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

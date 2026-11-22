@@ -162,7 +162,9 @@ export const createProduct = async (
 };
 
 export const deleteProduct = async (id: string): Promise<void> => {
-  await api.delete(`${BASE}/${id}`);
+  await api.delete(`${BASE}/${id}`, {
+    skipErrorToast: true,
+  } as ApiRequestConfig);
 };
 
 
