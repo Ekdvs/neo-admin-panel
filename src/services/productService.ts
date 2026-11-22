@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosRequestConfig } from "axios";
 
 import api from "@/lib/axios";
 import type {
@@ -12,6 +13,7 @@ import type {
 
 const BASE = "/api/product";
 const UPLOAD_CONCURRENCY = 3;
+type ApiRequestConfig = AxiosRequestConfig & { skipErrorToast?: boolean };
 
 export interface CreateProductInput {
   sku: string;
@@ -93,7 +95,7 @@ export const createProduct = async (
             size: file.size,
           })),
         },
-        { skipErrorToast: true },
+        { skipErrorToast: true } as ApiRequestConfig,
       );
       uploads = presign.data.data.uploads;
     } catch (error) {
@@ -153,7 +155,7 @@ export const createProduct = async (
   const response = await api.post<ApiResponse<Product>>(
     BASE,
     { ...fields, media: uploadedKeys },
-    { skipErrorToast: true },
+    { skipErrorToast: true } as ApiRequestConfig,
   );
 
   return response.data;
@@ -175,8 +177,8 @@ export interface UpdateProductInput {
   compareAtPrice: number | null;
   brand: string | null;
   model: string | null;
-  media: File[];
-  existingMedia: { key: string }[];
+  media: File[]; // newly selected files only
+  existingMedia: { id: string }[]; // existing rows to keep (DB ids)
 }
 
 export const updateProduct = async (
@@ -184,19 +186,12 @@ export const updateProduct = async (
   product: UpdateProductInput,
   onProgress?: (progress: CreateProgress) => void,
 ): Promise<ApiResponse<Product>> => {
-  const {
-    media: files,
-    existingMedia,
-    ...fields
-  } = product;
+  const { media: files, existingMedia, ...fields } = product;
 
-  // Keep existing media and upload only newly selected files.
   let newUploadedKeys: { key: string }[] = [];
 
   if (files.length > 0) {
-    const presign = await api.post<
-      ApiResponse<{ uploads: PresignedUpload[] }>
-    >(
+    const presign = await api.post<ApiResponse<{ uploads: PresignedUpload[] }>>(
       `${BASE}/upload-url`,
       {
         files: files.map((file) => ({
@@ -204,7 +199,7 @@ export const updateProduct = async (
           size: file.size,
         })),
       },
-      { skipErrorToast: true },
+      { skipErrorToast: true } as ApiRequestConfig,
     );
 
     const uploads = presign.data.data.uploads;
@@ -213,16 +208,11 @@ export const updateProduct = async (
       throw new Error("Failed to generate upload URLs for all files.");
     }
 
-    const totalBytes = files.reduce(
-      (sum, file) => sum + file.size,
-      0,
-    );
-
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
     const loaded = new Array<number>(files.length).fill(0);
 
     const report = () => {
       const done = loaded.reduce((a, b) => a + b, 0);
-
       onProgress?.({
         phase: "uploading",
         percent: totalBytes
@@ -231,50 +221,50 @@ export const updateProduct = async (
       });
     };
 
-    await runWithConcurrency(
-      files.map((file, index) => async () => {
-        await axios.put(uploads[index].uploadUrl, file, {
-          headers: {
-            "Content-Type": file.type,
-          },
-          timeout: 0,
-          onUploadProgress: (event) => {
-            loaded[index] = event.loaded;
-            report();
-          },
-        });
+    report();
 
-        loaded[index] = file.size;
-        report();
-      }),
-      UPLOAD_CONCURRENCY,
-    );
+    try {
+      await runWithConcurrency(
+        files.map((file, index) => async () => {
+          await axios.put(uploads[index].uploadUrl, file, {
+            headers: { "Content-Type": file.type },
+            timeout: 0,
+            onUploadProgress: (event) => {
+              loaded[index] = event.loaded;
+              report();
+            },
+          });
+          loaded[index] = file.size;
+          report();
+        }),
+        UPLOAD_CONCURRENCY,
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          error.response
+            ? `S3 rejected upload (${error.response.status}). Check IAM permissions and bucket region.`
+            : "S3 upload blocked. Add your frontend origin to the bucket CORS and check AWS_REGION.",
+        );
+      }
+      throw error;
+    }
 
-    newUploadedKeys = uploads.map((upload) => ({
-      key: upload.key,
-    }));
+    newUploadedKeys = uploads.map((upload) => ({ key: upload.key }));
   }
 
-  onProgress?.({
-    phase: "saving",
-    percent: 100,
-  });
+  onProgress?.({ phase: "saving", percent: 100 });
 
-  // Existing media + newly uploaded media.
-  const finalMedia = [
-    ...existingMedia,
+  // Existing first (kept by id), then new uploads (by key) – order = sortOrder
+  const finalMedia: ({ id: string } | { key: string })[] = [
+    ...existingMedia.map(({ id }) => ({ id })),
     ...newUploadedKeys,
   ];
 
   const response = await api.put<ApiResponse<Product>>(
     `${BASE}/${id}`,
-    {
-      ...fields,
-      media: finalMedia,
-    },
-    {
-      skipErrorToast: true,
-    },
+    { ...fields, media: finalMedia },
+    { skipErrorToast: true } as ApiRequestConfig,
   );
 
   return response.data;
